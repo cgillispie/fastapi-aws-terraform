@@ -1,0 +1,84 @@
+service-talk-booking-code-quality:
+  stage: test
+  image: registry.gitlab.com/cgillispie/talk-booking:cicd-python3.9-slim
+  before_script:
+    - cd services/talk-booking/
+    - poetry install
+  script:
+    - poetry run flake8 .
+    - poetry run black . --check
+    - poetry run isort . --check-only --profile black
+    - poetry run bandit .
+    - poetry run safety check
+  only:
+    changes:
+      - ci_cd/python/Dockerfile
+    refs:
+      - master
+
+service-talk-booking-tests:
+  stage: test
+  image: registry.gitlab.com/cgillispie/talk-booking:cicd-python3.9-slim
+  before_script:
+    - cd services/talk_booking/
+    - poetry install
+  script:
+    - poetry run python -m pytest --junitxml=report.xml --cov=./ --cov-report=xml tests/unit tests/integration
+  after_script:
+    - bash <(curl -s https://codecov.io/bash)>
+  artifacts:
+    when: always
+    reports:
+      junit: services/talk_booking/report.xml
+  only:
+    refs:
+      - merge_requests
+      - master
+    changes:
+      - services/talk_booking/**/*
+
+.service-talk-booking-docker-image:
+  image: registry.gitlab.com/cgillispie/talk-booking:cicd-docker
+  stage: docker
+  services:
+    - docker:19.03.0-dind
+  before_script:
+    - cd services/talk_booking/
+    - poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt
+    - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 821026049176.dkr.ecr.us-east-1.amazonaws.com
+  script:
+    - docker build --pull -t "$DOCKER_IMAGE_TAG" .
+    - docker push "$DOCKER_IMAGE_TAG"
+
+service-talk-booking-docker-image-development:
+  extends: .service-talk-booking-docker-image
+  variables:
+    DOCKER_IMAGE_TAG: 821026049176.dkr.ecr.us-east-1.amazonaws.com/talk-booking-dev:development-$CI_COMMIT_SHA
+  only:
+    refs:
+      - merge_requests
+      - master
+    changes:
+      - services/talk_booking/**/*
+
+.service-talk-booking-deploy:
+  image: registry.gitlab.com/cgillispie/talk-booking:cicd-python3.9-slim
+  stage: deploy
+  before_script:
+    - cd services/talk_booking/
+    - pip install boto3
+  script:
+    - python deploy.py --cluster_name $ENVIRONMENT_NAME --service_name $ENVIRONMENT_NAME --new_image_uri $DOCKER_IMAGE_TAG
+
+service-talk-booking-development:
+  extends: .service-talk-booking-deploy
+  variables:
+    ENVIRONMENT_NAME: talk-booking-dev
+    APP_ENVIRONMENT_NAME: development
+    DOCKER_IMAGE_TAG: 821026049176.dkr.ecr.us-east-1.amazonaws.com/talk-booking-dev:development-$CI_COMMIT_SHA
+  only:
+    refs:
+      - merge_requests
+      - master
+    changes:
+      - services/talk_booking/**/*
